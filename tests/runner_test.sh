@@ -136,4 +136,21 @@ test_wake_failure_does_not_change_status() {
   assert_contains "$RUNNER_RUNS_ROOT/w2/log" "wake failed"
 }
 
+test_grok_stub_is_usage() {
+  "$RUNNER" --id g1 --engine grok --workdir "$WORK" -- "do a thing"; rc=$?
+  assert_eq "$rc" 4
+  assert_eq "$(cat "$RUNNER_RUNS_ROOT/g1/status")" usage
+  assert_contains "$RUNNER_RUNS_ROOT/g1/reason" "not implemented"
+}
+
+test_opencode_stub_is_usage() {
+  "$RUNNER" --id o1 --engine opencode --workdir "$WORK" -- "do a thing"; rc=$?
+  assert_eq "$rc" 4
+}
+
+test_unknown_engine_is_usage() {
+  "$RUNNER" --engine nope --workdir "$WORK" -- true; rc=$?
+  assert_eq "$rc" 4
+}
+
 run_tests "${1:-}"

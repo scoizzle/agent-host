@@ -69,6 +69,15 @@ validate_after_dir() {
   [ -d "$WORKDIR" ] || die_usage "workdir does not exist: $WORKDIR"
 }
 
+# Maps --engine to the argv that run_engine executes. v1: only shell is real.
+resolve_engine() {
+  case "$ENGINE" in
+    shell) : ;;  # CMD runs as-is (e.g. bash -lc '...')
+    grok|opencode)
+      die_usage "engine '$ENGINE' not implemented in v1 (see engines/README.md); use --engine shell" ;;
+  esac
+}
+
 now() { date +%s; }
 mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; }
 
@@ -150,6 +159,7 @@ main() {
   parse_args "$@"
   make_run_dir
   validate_after_dir
+  resolve_engine
   run_engine
   local st; decide_status > "$RUN_DIR/.st"; st="$(cat "$RUN_DIR/.st")"; rm -f "$RUN_DIR/.st"
   [ "$st" = blocked ] && FAIL_REASON="expect missing or empty: $EXPECT"
