@@ -50,4 +50,33 @@ test_default_id_is_timestamp_slug() {
   ls "$RUNNER_RUNS_ROOT" | grep -Eq '^[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$'
 }
 
+test_timeout_is_failed_and_group_killed() {
+  start=$(date +%s)
+  "$RUNNER" --id to --workdir "$WORK" --timeout 2 -- bash -c 'sleep 30 & echo $! > "$RUNNER_RUN_DIR/child"; while :; do echo tick; sleep 0.1; done'; rc=$?
+  assert_eq "$rc" 1
+  assert_eq "$(cat "$RUNNER_RUNS_ROOT/to/status")" failed
+  assert_contains "$RUNNER_RUNS_ROOT/to/reason" timeout
+  [ $(( $(date +%s) - start )) -lt 10 ] || fail "took too long"
+  child=$(cat "$RUNNER_RUNS_ROOT/to/child")
+  sleep 0.5; ! kill -0 "$child" 2>/dev/null || fail "child $child still alive"
+}
+
+test_stall_when_log_and_git_idle() {
+  "$RUNNER" --id st --workdir "$WORK" --stall-minutes 2 -- bash -c 'echo start; sleep 30'; rc=$?
+  assert_eq "$rc" 1
+  assert_eq "$(cat "$RUNNER_RUNS_ROOT/st/status")" failed
+  assert_contains "$RUNNER_RUNS_ROOT/st/reason" stall
+}
+
+test_no_stall_while_log_active() {
+  "$RUNNER" --id ok --workdir "$WORK" --stall-minutes 2 -- bash -c 'for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 0.5; done'; rc=$?
+  assert_eq "$rc" 0
+}
+
+test_git_activity_prevents_stall() {
+  git -C "$WORK" init -q
+  "$RUNNER" --id g --workdir "$WORK" --stall-minutes 2 -- bash -c 'for i in 1 2 3 4 5 6; do echo $i > f$i; sleep 0.7; done' >/dev/null; rc=$?
+  assert_eq "$rc" 0
+}
+
 run_tests "${1:-}"
