@@ -6,7 +6,7 @@ RUNNER="$ROOT/bin/runner"
 TMP_BASE="$ROOT/tests/.tmp"
 FAILS=0; PASSES=0
 
-fail() { echo "    FAIL: $*" >&2; return 1; }
+fail() { echo "    FAIL: $*" >&2; exit 1; }
 assert_eq() { [ "$1" = "$2" ] || fail "expected [$2] got [$1] ${3:-}"; }
 assert_file_nonempty() { [ -s "$1" ] || fail "expected non-empty file $1"; }
 assert_file_exists() { [ -e "$1" ] || fail "expected file $1"; }
