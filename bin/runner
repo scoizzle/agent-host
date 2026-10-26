@@ -113,14 +113,31 @@ run_engine() {
 }
 
 # Prints final status word. Replaced in Task 4 with expect gate.
+# Prints final status word. Engine failure wins; then the --expect gate.
 decide_status() {
-  if [ -n "$FAIL_REASON" ]; then echo failed; else echo done; fi
+  if [ -n "$FAIL_REASON" ]; then echo failed; return; fi
+  if [ -n "$EXPECT" ] && [ ! -s "$RUN_DIR/$EXPECT" ]; then
+    FAIL_REASON="expect missing or empty: $EXPECT"; echo blocked; return
+  fi
+  echo done
+}
+
+send_wake() {  # $1 status; never changes the outcome
+  [ -n "$WAKE_URL" ] || return 0
+  local exp="" body
+  [ -n "$EXPECT" ] && exp="$RUN_DIR/$EXPECT"
+  body="$(jq -nc --arg id "$ID" --arg status "$1" --arg run_dir "$RUN_DIR" --arg expect_path "$exp" \
+    '{id:$id,status:$status,run_dir:$run_dir,expect_path:$expect_path}')"
+  if ! curl -fsS -m 10 -X POST -H 'Content-Type: application/json' --data "$body" "$WAKE_URL" >/dev/null 2>>"$RUN_DIR/log"; then
+    echo "runner: wake failed for $WAKE_URL" >>"$RUN_DIR/log"
+  fi
 }
 
 finish() {  # $1 status
   local st="$1" rc
   echo "$st" > "$RUN_DIR/status"
   [ -n "$FAIL_REASON" ] && echo "$FAIL_REASON" > "$RUN_DIR/reason"
+  send_wake "$st"
   case "$st" in
     done) rc=$EXIT_DONE ;; failed) rc=$EXIT_FAILED ;; blocked) rc=$EXIT_BLOCKED ;;
     partial) rc=$EXIT_PARTIAL ;; *) rc=$EXIT_USAGE ;;
@@ -134,7 +151,9 @@ main() {
   make_run_dir
   validate_after_dir
   run_engine
-  finish "$(decide_status)"
+  local st; decide_status > "$RUN_DIR/.st"; st="$(cat "$RUN_DIR/.st")"; rm -f "$RUN_DIR/.st"
+  [ "$st" = blocked ] && FAIL_REASON="expect missing or empty: $EXPECT"
+  finish "$st"
 }
 
 main "$@"

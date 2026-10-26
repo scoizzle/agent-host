@@ -79,4 +79,61 @@ test_git_activity_prevents_stall() {
   assert_eq "$rc" 0
 }
 
+test_expect_present_is_done() {
+  "$RUNNER" --id e1 --workdir "$WORK" --expect out.md -- bash -c 'echo hello > "$RUNNER_RUN_DIR/out.md"'; rc=$?
+  assert_eq "$rc" 0
+  assert_eq "$(cat "$RUNNER_RUNS_ROOT/e1/status")" done
+}
+
+test_expect_empty_is_blocked() {
+  "$RUNNER" --id e2 --workdir "$WORK" --expect out.md -- true; rc=$?
+  assert_eq "$rc" 2
+  assert_eq "$(cat "$RUNNER_RUNS_ROOT/e2/status")" blocked
+  assert_contains "$RUNNER_RUNS_ROOT/e2/reason" "expect"
+}
+
+test_expect_missing_nested_is_blocked() {
+  "$RUNNER" --id e3 --workdir "$WORK" --expect sub/result.json -- true; rc=$?
+  assert_eq "$rc" 2
+}
+
+test_expect_rejects_escape() {
+  "$RUNNER" --id e4 --workdir "$WORK" --expect ../x -- true; rc=$?
+  assert_eq "$rc" 4
+  "$RUNNER" --id e5 --workdir "$WORK" --expect /etc/passwd -- true; rc=$?
+  assert_eq "$rc" 4
+}
+
+test_engine_failure_beats_expect() {
+  "$RUNNER" --id e6 --workdir "$WORK" --expect out.md -- bash -c 'exit 3'; rc=$?
+  assert_eq "$rc" 1
+}
+
+test_wake_posts_json() {
+  port=$(( 20000 + RANDOM % 20000 ))
+  python3 - "$port" "$T/wake.json" <<'PY' &
+import http.server, sys
+port, out = int(sys.argv[1]), sys.argv[2]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0)); open(out, 'wb').write(self.rfile.read(n))
+        self.send_response(204); self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', port), H).handle_request()
+PY
+  srv=$!; sleep 0.5
+  "$RUNNER" --id w1 --workdir "$WORK" --expect out.md --wake-url "http://127.0.0.1:$port/hook?k=s" -- bash -c 'echo x > "$RUNNER_RUN_DIR/out.md"'
+  wait "$srv"
+  assert_eq "$(jq -r .id "$T/wake.json")" w1
+  assert_eq "$(jq -r .status "$T/wake.json")" done
+  assert_eq "$(jq -r .run_dir "$T/wake.json")" "$RUNNER_RUNS_ROOT/w1"
+  assert_eq "$(jq -r .expect_path "$T/wake.json")" "$RUNNER_RUNS_ROOT/w1/out.md"
+}
+
+test_wake_failure_does_not_change_status() {
+  "$RUNNER" --id w2 --workdir "$WORK" --wake-url "http://127.0.0.1:1/none" -- true; rc=$?
+  assert_eq "$rc" 0
+  assert_contains "$RUNNER_RUNS_ROOT/w2/log" "wake failed"
+}
+
 run_tests "${1:-}"
