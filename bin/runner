@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# runner — supervise one job. See README "runner reference".
+set -uo pipefail
+
+EXIT_DONE=0 EXIT_FAILED=1 EXIT_BLOCKED=2 EXIT_PARTIAL=3 EXIT_USAGE=4
+RUNS_ROOT="${RUNNER_RUNS_ROOT:-$HOME/.runner-runs}"
+MINUTE_SECS="${RUNNER_MINUTE_SECS:-60}"
+POLL_SECS="${RUNNER_POLL_SECS:-1}"
+
+ID="" ENGINE=shell WORKDIR=/work/repo TIMEOUT_MIN=0 STALL_MIN=0 EXPECT="" WAKE_URL=""
+CMD=() RUN_DIR="" ENGINE_RC=0 FAIL_REASON=""
+
+usage_text() {
+  cat <<'EOF'
+usage: runner [--id NAME] [--engine shell|grok|opencode]
+              [--workdir PATH] [--timeout MIN] [--stall-minutes N]
+              [--expect RELPATH] [--wake-url URL] -- <command...>
+exit: 0 done, 1 failed, 2 blocked, 3 partial, 4 usage
+EOF
+}
+
+die_usage() {  # $1 message; writes status if run dir exists
+  echo "runner: $1" >&2; usage_text >&2
+  if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ]; then
+    echo usage > "$RUN_DIR/status"; echo "$1" > "$RUN_DIR/reason"
+  fi
+  exit "$EXIT_USAGE"
+}
+
+is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --id) ID="${2:-}"; shift 2 || die_usage "--id needs a value" ;;
+      --engine) ENGINE="${2:-}"; shift 2 || die_usage "--engine needs a value" ;;
+      --workdir) WORKDIR="${2:-}"; shift 2 || die_usage "--workdir needs a value" ;;
+      --timeout) TIMEOUT_MIN="${2:-}"; shift 2 || die_usage "--timeout needs a value" ;;
+      --stall-minutes) STALL_MIN="${2:-}"; shift 2 || die_usage "--stall-minutes needs a value" ;;
+      --expect) EXPECT="${2:-}"; shift 2 || die_usage "--expect needs a value" ;;
+      --wake-url) WAKE_URL="${2:-}"; shift 2 || die_usage "--wake-url needs a value" ;;
+      -h|--help) usage_text; exit "$EXIT_DONE" ;;
+      --) shift; CMD=("$@"); break ;;
+      *) die_usage "unknown argument: $1" ;;
+    esac
+  done
+  is_uint "$TIMEOUT_MIN" || die_usage "--timeout must be a whole number of minutes"
+  is_uint "$STALL_MIN" || die_usage "--stall-minutes must be a whole number"
+  if [ -n "$ID" ] && ! [[ "$ID" =~ ^[A-Za-z0-9._-]+$ ]]; then die_usage "--id must match [A-Za-z0-9._-]+"; fi
+  if [ -n "$EXPECT" ]; then
+    case "$EXPECT" in /*|..|../*|*/..|*/../*) die_usage "--expect must be relative to the run folder without .." ;; esac
+  fi
+  case "$ENGINE" in shell|grok|opencode) ;; *) die_usage "unsupported engine: $ENGINE" ;; esac
+}
+
+make_run_dir() {
+  [ -n "$ID" ] || ID="$(date +%Y%m%d-%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+  mkdir -p "$RUNS_ROOT"
+  RUN_DIR="$RUNS_ROOT/$ID"
+  if ! mkdir "$RUN_DIR" 2>/dev/null; then RUN_DIR=""; die_usage "run id already exists: $ID"; fi
+  RUN_DIR="$(cd "$RUN_DIR" && pwd)"
+  : > "$RUN_DIR/out.md"; : > "$RUN_DIR/log"; : > "$RUN_DIR/reason"
+  printf '%q ' "${CMD[@]}" > "$RUN_DIR/cmd"; echo >> "$RUN_DIR/cmd"
+  echo running > "$RUN_DIR/status"
+}
+
+validate_after_dir() {
+  [ "${#CMD[@]}" -gt 0 ] || die_usage "missing command after --"
+  [ -d "$WORKDIR" ] || die_usage "workdir does not exist: $WORKDIR"
+}
+
+# Sets ENGINE_RC and FAIL_REASON. Replaced in Task 3 with the watched version.
+run_engine() {
+  ( cd "$WORKDIR" && RUNNER_RUN_DIR="$RUN_DIR" RUNNER_ID="$ID" "${CMD[@]}" ) \
+    </dev/null >>"$RUN_DIR/log" 2>&1
+  ENGINE_RC=$?
+  [ "$ENGINE_RC" -eq 0 ] || FAIL_REASON="engine exit $ENGINE_RC"
+}
+
+# Prints final status word. Replaced in Task 4 with expect gate.
+decide_status() {
+  if [ -n "$FAIL_REASON" ]; then echo failed; else echo done; fi
+}
+
+finish() {  # $1 status
+  local st="$1" rc
+  echo "$st" > "$RUN_DIR/status"
+  [ -n "$FAIL_REASON" ] && echo "$FAIL_REASON" > "$RUN_DIR/reason"
+  case "$st" in
+    done) rc=$EXIT_DONE ;; failed) rc=$EXIT_FAILED ;; blocked) rc=$EXIT_BLOCKED ;;
+    partial) rc=$EXIT_PARTIAL ;; *) rc=$EXIT_USAGE ;;
+  esac
+  echo "runner: id=$ID status=$st run_dir=$RUN_DIR" >&2
+  exit "$rc"
+}
+
+main() {
+  parse_args "$@"
+  make_run_dir
+  validate_after_dir
+  run_engine
+  finish "$(decide_status)"
+}
+
+main "$@"
