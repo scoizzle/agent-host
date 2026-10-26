@@ -121,7 +121,7 @@ run_engine() {
   [ "$ENGINE_RC" -eq 0 ] || FAIL_REASON="engine exit $ENGINE_RC"
 }
 
-# Prints final status word. Replaced in Task 4 with expect gate.
+# Prints final status word.
 # Prints final status word. Engine failure wins; then the --expect gate.
 decide_status() {
   if [ -n "$FAIL_REASON" ]; then echo failed; return; fi

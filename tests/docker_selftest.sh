@@ -27,5 +27,7 @@ set -e
 echo "selftest: timeout ok"
 
 # entrypoint passthrough + non-root user
-[ "$(docker run --rm "$IMG" id -un)" = agent ] && echo "selftest: user ok"
+user="$(docker run --rm "$IMG" id -un)"
+[ "$user" = agent ] || { echo "expected user agent got $user" >&2; exit 1; }
+echo "selftest: user ok"
 echo "selftest: PASS"
