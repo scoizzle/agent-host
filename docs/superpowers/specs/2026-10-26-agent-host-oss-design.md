@@ -108,6 +108,8 @@ runner [--id NAME] [--engine shell|grok|opencode]
 | `--wake-url` | Optional POST on terminal status; JSON body `{id,status,run_dir,expect_path}`; auth is caller’s (query/header secret) |
 | `--timeout` / `--stall-minutes` | Hard stop; map to `failed` with reason |
 
+**Env exported to the engine:** `RUNNER_RUN_DIR` = absolute path of the run folder; `RUNNER_ID` = run id. Shell/hello-job examples write `--expect` artifacts via `$RUNNER_RUN_DIR/…`.
+
 **Exit codes:** `0` done, `1` failed, `2` blocked, `3` partial, `4` usage/bad flags.
 
 **Example orchestrator prompt:** On this machine, run `runner --engine shell --expect out.md -- bash -lc 'echo hello > "$RUNNER_RUN_DIR/out.md"'` (or equivalent documented env), then exit. CloudAgent does not parse `out.md`.
