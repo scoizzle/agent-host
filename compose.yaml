@@ -1,0 +1,30 @@
+services:
+  worker:
+    build: .
+    image: agent-host:latest
+    hostname: ${WORKER_NAME:-agent-host-1}
+    restart: unless-stopped
+    init: false            # tini is PID 1
+    stop_grace_period: 30s
+    env_file:
+      - path: .env
+        required: false
+    mem_limit: ${MEM_LIMIT:-4g}
+    cpus: ${CPUS:-2}
+    environment:
+      WORKER_NAME: ${WORKER_NAME:-agent-host-1}
+      REPO_URL: ${REPO_URL:-}
+      MAX_AGENTS: ${MAX_AGENTS:-}
+    volumes:
+      - cursor:/home/agent/.cursor
+      - config:/home/agent/.config        # cursor login state, git identity
+      - runs:/home/agent/.runner-runs
+      - work:/work
+      # Optional read-only wake config, e.g. a file holding your webhook URL:
+      # - ./wake:/home/agent/.wake:ro
+
+volumes:
+  cursor: {}
+  config: {}
+  runs: {}
+  work: {}

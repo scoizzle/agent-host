@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# runner — supervise one job. See README "runner reference".
+set -uo pipefail
+
+EXIT_DONE=0 EXIT_FAILED=1 EXIT_BLOCKED=2 EXIT_PARTIAL=3 EXIT_USAGE=4
+RUNS_ROOT="${RUNNER_RUNS_ROOT:-$HOME/.runner-runs}"
+MINUTE_SECS="${RUNNER_MINUTE_SECS:-60}"
+POLL_SECS="${RUNNER_POLL_SECS:-1}"
+
+ID="" ENGINE=shell WORKDIR=/work/repo TIMEOUT_MIN=0 STALL_MIN=0 EXPECT="" WAKE_URL=""
+CMD=() RUN_DIR="" ENGINE_RC=0 FAIL_REASON=""
+
+usage_text() {
+  cat <<'EOF'
+usage: runner [--id NAME] [--engine shell|grok|opencode]
+              [--workdir PATH] [--timeout MIN] [--stall-minutes N]
+              [--expect RELPATH] [--wake-url URL] -- <command...>
+exit: 0 done, 1 failed, 2 blocked, 3 partial, 4 usage
+EOF
+}
+
+die_usage() {  # $1 message; writes status if run dir exists
+  echo "runner: $1" >&2; usage_text >&2
+  if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ]; then
+    echo usage > "$RUN_DIR/status"; echo "$1" > "$RUN_DIR/reason"
+  fi
+  exit "$EXIT_USAGE"
+}
+
+is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --id) ID="${2:-}"; shift 2 || die_usage "--id needs a value" ;;
+      --engine) ENGINE="${2:-}"; shift 2 || die_usage "--engine needs a value" ;;
+      --workdir) WORKDIR="${2:-}"; shift 2 || die_usage "--workdir needs a value" ;;
+      --timeout) TIMEOUT_MIN="${2:-}"; shift 2 || die_usage "--timeout needs a value" ;;
+      --stall-minutes) STALL_MIN="${2:-}"; shift 2 || die_usage "--stall-minutes needs a value" ;;
+      --expect) EXPECT="${2:-}"; shift 2 || die_usage "--expect needs a value" ;;
+      --wake-url) WAKE_URL="${2:-}"; shift 2 || die_usage "--wake-url needs a value" ;;
+      -h|--help) usage_text; exit "$EXIT_DONE" ;;
+      --) shift; CMD=("$@"); break ;;
+      *) die_usage "unknown argument: $1" ;;
+    esac
+  done
+  is_uint "$TIMEOUT_MIN" || die_usage "--timeout must be a whole number of minutes"
+  is_uint "$STALL_MIN" || die_usage "--stall-minutes must be a whole number"
+  if [ -n "$ID" ] && ! [[ "$ID" =~ ^[A-Za-z0-9._-]+$ ]]; then die_usage "--id must match [A-Za-z0-9._-]+"; fi
+  if [ -n "$EXPECT" ]; then
+    case "$EXPECT" in /*|..|../*|*/..|*/../*) die_usage "--expect must be relative to the run folder without .." ;; esac
+  fi
+  case "$ENGINE" in shell|grok|opencode) ;; *) die_usage "unsupported engine: $ENGINE" ;; esac
+}
+
+make_run_dir() {
+  [ -n "$ID" ] || ID="$(date +%Y%m%d-%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+  mkdir -p "$RUNS_ROOT"
+  RUN_DIR="$RUNS_ROOT/$ID"
+  if ! mkdir "$RUN_DIR" 2>/dev/null; then RUN_DIR=""; die_usage "run id already exists: $ID"; fi
+  RUN_DIR="$(cd "$RUN_DIR" && pwd)"
+  : > "$RUN_DIR/out.md"; : > "$RUN_DIR/log"; : > "$RUN_DIR/reason"
+  printf '%q ' "${CMD[@]}" > "$RUN_DIR/cmd"; echo >> "$RUN_DIR/cmd"
+  echo running > "$RUN_DIR/status"
+}
+
+validate_after_dir() {
+  [ "${#CMD[@]}" -gt 0 ] || die_usage "missing command after --"
+  [ -d "$WORKDIR" ] || die_usage "workdir does not exist: $WORKDIR"
+}
+
+# Maps --engine to the argv that run_engine executes. v1: only shell is real.
+resolve_engine() {
+  case "$ENGINE" in
+    shell) : ;;  # CMD runs as-is (e.g. bash -lc '...')
+    grok|opencode)
+      die_usage "engine '$ENGINE' not implemented in v1 (see engines/README.md); use --engine shell" ;;
+  esac
+}
+
+now() { date +%s; }
+mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; }
+
+git_fingerprint() {  # changes whenever HEAD or the working tree changes
+  if git -C "$WORKDIR" rev-parse --git-dir >/dev/null 2>&1; then
+    { git -C "$WORKDIR" rev-parse HEAD 2>/dev/null; git -C "$WORKDIR" status --porcelain 2>/dev/null; } | md5sum | cut -d' ' -f1
+  fi
+}
+
+kill_group() {  # $1 pgid
+  kill -TERM -- "-$1" 2>/dev/null
+  local _; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 -- "-$1" 2>/dev/null || return 0; sleep 0.2; done
+  kill -KILL -- "-$1" 2>/dev/null
+}
+
+# Starts the engine in its own process group, watches it, sets ENGINE_RC / FAIL_REASON.
+run_engine() {
+  ( cd "$WORKDIR" && RUNNER_RUN_DIR="$RUN_DIR" RUNNER_ID="$ID" exec setsid "${CMD[@]}" ) \
+    </dev/null >>"$RUN_DIR/log" 2>&1 &
+  local pid=$! start last_act fp new_fp lm
+  echo "$pid" > "$RUN_DIR/pid"
+  trap 'kill_group "$pid"; FAIL_REASON="signal"; finish failed' TERM INT
+  start=$(now); last_act=$start; fp="$(git_fingerprint)"; lm=$(mtime "$RUN_DIR/log")
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep "$POLL_SECS"
+    new_fp="$(git_fingerprint)"
+    if [ "$(mtime "$RUN_DIR/log")" != "$lm" ] || [ "$new_fp" != "$fp" ] || [ -n "$(find "$RUN_DIR/log" -newermt "@$last_act" 2>/dev/null)" ]; then
+      last_act=$(now); fp="$new_fp"; lm=$(mtime "$RUN_DIR/log")
+    fi
+    if [ "$TIMEOUT_MIN" -gt 0 ] && [ $(( $(now) - start )) -ge $(( TIMEOUT_MIN * MINUTE_SECS )) ]; then
+      kill_group "$pid"; wait "$pid" 2>/dev/null; ENGINE_RC=124
+      FAIL_REASON="timeout after ${TIMEOUT_MIN}m"; echo "runner: $FAIL_REASON" >>"$RUN_DIR/log"; return
+    fi
+    if [ "$STALL_MIN" -gt 0 ] && [ $(( $(now) - last_act )) -ge $(( STALL_MIN * MINUTE_SECS )) ]; then
+      kill_group "$pid"; wait "$pid" 2>/dev/null; ENGINE_RC=125
+      FAIL_REASON="stall: no log or git activity for ${STALL_MIN}m"; echo "runner: $FAIL_REASON" >>"$RUN_DIR/log"; return
+    fi
+  done
+  wait "$pid"; ENGINE_RC=$?
+  trap - TERM INT
+  [ "$ENGINE_RC" -eq 0 ] || FAIL_REASON="engine exit $ENGINE_RC"
+}
+
+# Prints final status word.
+# Prints final status word. Engine failure wins; then the --expect gate.
+decide_status() {
+  if [ -n "$FAIL_REASON" ]; then echo failed; return; fi
+  if [ -n "$EXPECT" ] && [ ! -s "$RUN_DIR/$EXPECT" ]; then
+    FAIL_REASON="expect missing or empty: $EXPECT"; echo blocked; return
+  fi
+  echo "done"
+}
+
+send_wake() {  # $1 status; never changes the outcome
+  [ -n "$WAKE_URL" ] || return 0
+  local exp="" body
+  [ -n "$EXPECT" ] && exp="$RUN_DIR/$EXPECT"
+  body="$(jq -nc --arg id "$ID" --arg status "$1" --arg run_dir "$RUN_DIR" --arg expect_path "$exp" \
+    '{id:$id,status:$status,run_dir:$run_dir,expect_path:$expect_path}')"
+  if ! curl -fsS -m 10 -X POST -H 'Content-Type: application/json' --data "$body" "$WAKE_URL" >/dev/null 2>>"$RUN_DIR/log"; then
+    echo "runner: wake failed for $WAKE_URL" >>"$RUN_DIR/log"
+  fi
+}
+
+finish() {  # $1 status
+  local st="$1" rc
+  echo "$st" > "$RUN_DIR/status"
+  [ -n "$FAIL_REASON" ] && echo "$FAIL_REASON" > "$RUN_DIR/reason"
+  send_wake "$st"
+  case "$st" in
+    done) rc=$EXIT_DONE ;; failed) rc=$EXIT_FAILED ;; blocked) rc=$EXIT_BLOCKED ;;
+    partial) rc=$EXIT_PARTIAL ;; *) rc=$EXIT_USAGE ;;
+  esac
+  echo "runner: id=$ID status=$st run_dir=$RUN_DIR" >&2
+  exit "$rc"
+}
+
+main() {
+  parse_args "$@"
+  make_run_dir
+  validate_after_dir
+  resolve_engine
+  run_engine
+  local st; decide_status > "$RUN_DIR/.st"; st="$(cat "$RUN_DIR/.st")"; rm -f "$RUN_DIR/.st"
+  [ "$st" = blocked ] && FAIL_REASON="expect missing or empty: $EXPECT"
+  finish "$st"
+}
+
+main "$@"
