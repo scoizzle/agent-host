@@ -89,7 +89,7 @@ git_fingerprint() {  # changes whenever HEAD or the working tree changes
 
 kill_group() {  # $1 pgid
   kill -TERM -- "-$1" 2>/dev/null
-  local i; for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 -- "-$1" 2>/dev/null || return 0; sleep 0.2; done
+  local _; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 -- "-$1" 2>/dev/null || return 0; sleep 0.2; done
   kill -KILL -- "-$1" 2>/dev/null
 }
 
@@ -128,7 +128,7 @@ decide_status() {
   if [ -n "$EXPECT" ] && [ ! -s "$RUN_DIR/$EXPECT" ]; then
     FAIL_REASON="expect missing or empty: $EXPECT"; echo blocked; return
   fi
-  echo done
+  echo "done"
 }
 
 send_wake() {  # $1 status; never changes the outcome

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016  # single quotes are intentional: expanded by the engine
 # shellcheck source=tests/lib.sh
 source "$(dirname "$0")/lib.sh"
 
 test_done_creates_run_dir_and_status() {
   "$RUNNER" --id t1 --workdir "$WORK" -- bash -c 'echo hi' ; rc=$?
   assert_eq "$rc" 0
-  assert_eq "$(cat "$RUNNER_RUNS_ROOT/t1/status")" done
+  assert_eq "$(cat "$RUNNER_RUNS_ROOT/t1/status")" "done"
   assert_file_exists "$RUNNER_RUNS_ROOT/t1/out.md"
   assert_contains "$RUNNER_RUNS_ROOT/t1/log" hi
 }
@@ -47,7 +48,7 @@ test_existing_id_is_usage() {
 
 test_default_id_is_timestamp_slug() {
   "$RUNNER" --workdir "$WORK" -- true
-  ls "$RUNNER_RUNS_ROOT" | grep -Eq '^[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$'
+  compgen -G "$RUNNER_RUNS_ROOT/*" | xargs -n1 basename | grep -Eq '^[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$'
 }
 
 test_timeout_is_failed_and_group_killed() {
@@ -82,7 +83,7 @@ test_git_activity_prevents_stall() {
 test_expect_present_is_done() {
   "$RUNNER" --id e1 --workdir "$WORK" --expect out.md -- bash -c 'echo hello > "$RUNNER_RUN_DIR/out.md"'; rc=$?
   assert_eq "$rc" 0
-  assert_eq "$(cat "$RUNNER_RUNS_ROOT/e1/status")" done
+  assert_eq "$(cat "$RUNNER_RUNS_ROOT/e1/status")" "done"
 }
 
 test_expect_empty_is_blocked() {
@@ -125,7 +126,7 @@ PY
   "$RUNNER" --id w1 --workdir "$WORK" --expect out.md --wake-url "http://127.0.0.1:$port/hook?k=s" -- bash -c 'echo x > "$RUNNER_RUN_DIR/out.md"'
   wait "$srv"
   assert_eq "$(jq -r .id "$T/wake.json")" w1
-  assert_eq "$(jq -r .status "$T/wake.json")" done
+  assert_eq "$(jq -r .status "$T/wake.json")" "done"
   assert_eq "$(jq -r .run_dir "$T/wake.json")" "$RUNNER_RUNS_ROOT/w1"
   assert_eq "$(jq -r .expect_path "$T/wake.json")" "$RUNNER_RUNS_ROOT/w1/out.md"
 }

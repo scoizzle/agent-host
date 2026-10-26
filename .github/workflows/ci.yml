@@ -1,8 +1,20 @@
 name: ci
 on: [push, pull_request]
 jobs:
-  placeholder:
+  lint:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: echo "ci scaffold"
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck -x bin/runner entrypoint.sh tests/*.sh
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/runner_test.sh
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config -q
+      - run: bash tests/docker_selftest.sh
